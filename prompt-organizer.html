@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<title>AI Prompt Organizer</title>
+<!-- 
+  Single‑file Prompt Organizer
+  Author: ChatGPT (o3)
+  Description: Browser‑based tool for creating, editing, searching & storing AI prompts using IndexedDB.
+-->
+<style>
+/* ---------- CSS VARIABLES FOR LIGHT/DARK THEMES ---------- */
+:root{
+  --bg:#ffffff;
+  --text:#222222;
+  --card-bg:#f9f9f9;
+  --primary:#4f46e5;
+  --border:#e5e5e5;
+}
+body.dark{
+  --bg:#121212;
+  --text:#e0e0e0;
+  --card-bg:#1e1e1e;
+  --border:#2a2a2a;
+}
+/* ---------- GLOBAL STYLES ---------- */
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;
+}
+header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:1rem 2rem;background:var(--card-bg);border-bottom:1px solid var(--border);
+  box-shadow:0 2px 4px rgba(0,0,0,.05);
+}
+h1{font-size:1.5rem;}
+/* Dark‑mode toggle */
+.toggle{
+  display:flex;align-items:center;gap:.5rem;font-size:.9rem;cursor:pointer;
+}
+.toggle input{accent-color:var(--primary);cursor:pointer;}
+main{width:100%;max-width:900px;margin:2rem auto;flex:1;display:flex;flex-direction:column;gap:2rem;padding:0 1rem;}
+/* Form section */
+form{
+  display:grid;gap:1rem;background:var(--card-bg);padding:1rem;border:1px solid var(--border);
+  border-radius:.75rem;
+}
+form input,form textarea{
+  width:100%;padding:.5rem .75rem;border:1px solid var(--border);
+  border-radius:.5rem;background:var(--bg);color:var(--text);
+}
+form textarea{resize:vertical;min-height:5rem;}
+button{
+  padding:.6rem 1.1rem;border:none;border-radius:.5rem;background:var(--primary);color:#fff;font-weight:600;cursor:pointer;
+}
+button.secondary{
+  background:transparent;color:var(--primary);border:1px solid var(--primary);
+}
+.controls{display:flex;gap:.5rem;}
+/* Search input */
+#searchInput{padding:.7rem 1rem;border:1px solid var(--border);border-radius:.5rem;background:var(--card-bg);} 
+#searchWrap{display:flex;justify-content:space-between;align-items:center;}
+/* Prompt grid */
+#promptsGrid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem;
+}
+.prompt-card{
+  background:var(--card-bg);padding:1rem;border:1px solid var(--border);border-radius:.75rem;
+  display:flex;flex-direction:column;gap:.5rem;position:relative;
+}
+.prompt-card h3{font-size:1rem;}
+.prompt-card p{white-space:pre-wrap;font-size:.9rem;}
+.tags{display:flex;flex-wrap:wrap;gap:.25rem;}
+.tag{
+  background:var(--primary);color:#fff;padding:.1rem .5rem;border-radius:.25rem;font-size:.7rem;
+}
+.card-actions{
+  display:flex;gap:.5rem;position:absolute;top:.6rem;right:.6rem;
+}
+.card-actions button{
+  background:none;border:none;color:var(--primary);cursor:pointer;font-size:.9rem;padding:.2rem;
+}
+.hidden{display:none;}
+@media(max-width:600px){
+  header{flex-direction:column;gap:.75rem;}
+}
+</style>
+</head>
+<body>
+  <header>
+    <h1>AI Prompt Organizer</h1>
+    <label class='toggle'>
+      <input type='checkbox' id='themeToggle'>
+      <span>Dark mode</span>
+    </label>
+  </header>
+
+  <main>
+    <!-- ---------- CREATE / EDIT FORM ---------- -->
+    <section id='formSection'>
+      <form id='promptForm'>
+        <input type='hidden' id='promptId'>
+        <input type='text' id='titleInput' placeholder='Prompt title' required>
+        <input type='text' id='tagsInput' placeholder='Tags (comma‑separated)'>
+        <textarea id='contentInput' placeholder='Prompt content' required></textarea>
+        <div class='controls'>
+          <button type='submit' id='saveBtn'>Save</button>
+          <button type='button' class='secondary hidden' id='cancelEditBtn'>Cancel</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ---------- SEARCH / FILTER ---------- -->
+    <section id='searchWrap'>
+      <input type='search' id='searchInput' placeholder='Search by title or tag...'>
+      <span id='resultCount'></span>
+    </section>
+
+    <!-- ---------- PROMPTS GRID ---------- -->
+    <section id='promptsGrid'></section>
+  </main>
+
+  <!-- Template for prompt cards -->
+  <template id='promptCardTpl'>
+    <article class='prompt-card'>
+      <div class='card-actions'>
+        <button class='editBtn' title='Edit'>&#9998;</button>
+        <button class='delBtn' title='Delete'>&#128465;</button>
+      </div>
+      <h3 class='p-title'></h3>
+      <div class='tags'></div>
+      <p class='p-content'></p>
+      <small class='p-date'></small>
+    </article>
+  </template>
+
+<script>
+/* -------------------------------------------------------
+  IndexedDB Prompt Organizer
+  ------------------------------------------------------- */
+
+// ---------- IndexedDB setup ----------
+const DB_NAME = 'promptOrganizerDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'prompts';
+let db = null;
+
+function openDB(){
+  return new Promise((resolve,reject)=>{
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = e=>{
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains(STORE_NAME)){
+        db.createObjectStore(STORE_NAME,{keyPath:'id',autoIncrement:true});
+      }
+    };
+    request.onsuccess = e=>{ db = e.target.result; resolve(); };
+    request.onerror = e=>reject(e.target.error);
+  });
+}
+
+// ---------- CRUD Helpers ----------
+function addPrompt(data){
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(STORE_NAME,'readwrite');
+    tx.objectStore(STORE_NAME).add(data);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = e=>reject(e.target.error);
+  });
+}
+
+function getAllPrompts(){
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(STORE_NAME,'readonly');
+    const req = tx.objectStore(STORE_NAME).getAll();
+    req.onsuccess = e=>resolve(e.target.result);
+    req.onerror = e=>reject(e.target.error);
+  });
+}
+
+function updatePrompt(id, data){
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(STORE_NAME,'readwrite');
+    tx.objectStore(STORE_NAME).put({...data, id});
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = e=>reject(e.target.error);
+  });
+}
+
+function deletePrompt(id){
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction(STORE_NAME,'readwrite');
+    tx.objectStore(STORE_NAME).delete(id);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = e=>reject(e.target.error);
+  });
+}
+
+// ---------- DOM Elements ----------
+const promptForm = document.getElementById('promptForm');
+const titleInput = document.getElementById('titleInput');
+const tagsInput = document.getElementById('tagsInput');
+const contentInput = document.getElementById('contentInput');
+const promptIdInput = document.getElementById('promptId');
+const cancelEditBtn = document.getElementById('cancelEditBtn');
+const searchInput = document.getElementById('searchInput');
+const promptsGrid = document.getElementById('promptsGrid');
+const resultCount = document.getElementById('resultCount');
+const themeToggle = document.getElementById('themeToggle');
+const cardTpl = document.getElementById('promptCardTpl');
+
+// ---------- State ----------
+let prompts = []; // Cached prompt list
+
+// ---------- Initialization ----------
+document.addEventListener('DOMContentLoaded', async ()=>{
+  // Theme
+  const savedTheme = localStorage.getItem('theme') || 'light';
+  if(savedTheme === 'dark'){ document.body.classList.add('dark'); themeToggle.checked = true; }
+
+  // Open DB & render
+  await openDB();
+  prompts = await getAllPrompts();
+  renderPrompts();
+
+  // Event bindings
+  promptForm.addEventListener('submit', handleFormSubmit);
+  cancelEditBtn.addEventListener('click', resetForm);
+  searchInput.addEventListener('input', renderPrompts);
+  themeToggle.addEventListener('change', toggleTheme);
+});
+
+// ---------- Event Handlers ----------
+async function handleFormSubmit(e){
+  e.preventDefault();
+  const id = Number(promptIdInput.value);
+  const data = {
+    title: titleInput.value.trim(),
+    content: contentInput.value.trim(),
+    tags: tagsInput.value.split(',').map(t=>t.trim()).filter(Boolean),
+    dateCreated: id ? prompts.find(p=>p.id===id).dateCreated : new Date().toISOString()
+  };
+  if(id){ // Update
+    await updatePrompt(id, data);
+    const idx = prompts.findIndex(p=>p.id===id);
+    prompts[idx] = {...data, id};
+  }else{ // Add
+    await addPrompt(data);
+    // Re-read to obtain generated id
+    prompts = await getAllPrompts();
+  }
+  resetForm();
+  renderPrompts();
+}
+
+function resetForm(){
+  promptIdInput.value = '';
+  titleInput.value = '';
+  tagsInput.value = '';
+  contentInput.value = '';
+  cancelEditBtn.classList.add('hidden');
+  document.getElementById('saveBtn').textContent = 'Save';
+}
+
+function toggleTheme(){
+  const dark = themeToggle.checked;
+  document.body.classList.toggle('dark', dark);
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+}
+
+function handleEdit(id){
+  const prompt = prompts.find(p=>p.id===id);
+  if(!prompt) return;
+  promptIdInput.value = prompt.id;
+  titleInput.value = prompt.title;
+  tagsInput.value = prompt.tags.join(', ');
+  contentInput.value = prompt.content;
+  cancelEditBtn.classList.remove('hidden');
+  document.getElementById('saveBtn').textContent = 'Update';
+}
+
+async function handleDelete(id){
+  if(!confirm('Delete this prompt?')) return;
+  await deletePrompt(id);
+  prompts = prompts.filter(p=>p.id!==id);
+  renderPrompts();
+}
+
+// ---------- Render ----------
+function renderPrompts(){
+  const term = searchInput.value.trim().toLowerCase();
+  const filtered = prompts.filter(p=>{
+    if(!term) return true;
+    return p.title.toLowerCase().includes(term) ||
+           p.tags.some(t=>t.toLowerCase().includes(term));
+  });
+  // Clear grid
+  promptsGrid.innerHTML = '';
+  filtered.forEach(p=>{
+    const node = cardTpl.content.cloneNode(true);
+    node.querySelector('.p-title').textContent = p.title;
+    node.querySelector('.p-content').textContent = p.content;
+    node.querySelector('.p-date').textContent = new Date(p.dateCreated).toLocaleString();
+    const tagWrap = node.querySelector('.tags');
+    p.tags.forEach(t=>{
+      const span = document.createElement('span');
+      span.className = 'tag';
+      span.textContent = t;
+      tagWrap.appendChild(span);
+    });
+    node.querySelector('.editBtn').onclick = ()=>handleEdit(p.id);
+    node.querySelector('.delBtn').onclick = ()=>handleDelete(p.id);
+    promptsGrid.appendChild(node);
+  });
+  resultCount.textContent = `${filtered.length} prompt${filtered.length!==1?'s':''}`;
+}
+</script>
+</body>
+</html>
